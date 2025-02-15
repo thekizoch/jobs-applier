@@ -1,0 +1,25 @@
+linkedin:
+  email: "your_email@example.com"
+  password: "super_secret_password"
+
+search:
+  keywords: "Gen AI Engineer"
+  location: "Remote"
+  max_applications: 20
+  experience_levels:
+    - "ENTRY_LEVEL"
+    - "ASSOCIATE"
+  job_types:
+    - "FULL_TIME"
+  date_posted: "Past Week"    # or "Past 24 hours", "Any time"
+
+llm:
+  provider: "openai"
+  api_key: "YOUR_API_KEY_HERE"
+  enabled: true
+
+user_profile:
+  full_name: "Your Name"
+  phone: "+1 808 555 1234"
+  resume_path: "path/to/resume.pdf"
+  summary: "2 years of software engineering experience focusing on Python backend..."
