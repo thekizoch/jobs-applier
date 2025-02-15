@@ -149,32 +149,34 @@ def login_linkedin(page, email: str, password: str) -> bool:
 def perform_job_search(page, keywords: str, location: str, config: Config) -> bool:
     """
     Navigate to LinkedIn Jobs search with advanced filters for Easy Apply and Remote jobs.
+    Ensures we get the two-pane layout for proper job list viewing.
     Returns True if search successful, False otherwise.
     """
     try:
         logger.info(f"Initiating job search for '{keywords}' in '{location}'")
         
-        # Construct search URL with advanced filters
+        # Construct clean search URL with only necessary parameters
         base_url = "https://www.linkedin.com/jobs/search/"
         
         # URL encode parameters properly
         encoded_keywords = keywords.replace(" ", "%20")
         encoded_location = location.replace(" ", "%20") if location.lower() != "remote" else "Remote"
         
-        # Build query parameters including Easy Apply and Remote filters
-        # f_LF=f_AL -> Easy Apply filter
-        # f_WT=2 -> Remote jobs filter (or f_WRA=true depending on LinkedIn version)
+        # Build essential query parameters - order matters for LinkedIn
         query_params = [
             f"keywords={encoded_keywords}",
             f"location={encoded_location}",
-            "f_LF=f_AL",  # Easy Apply filter
-            "f_WT=2"      # Remote filter
+            "f_LF=f_AL",     # Easy Apply filter
+            "f_WT=2",        # Remote filter
+            "sortBy=DD"      # Sort by date to get fresh postings
         ]
         
-        # Add any additional filters from config
+        # Add any additional filters from config, excluding problematic ones
         search_filters = config.get_nested("search", "filters", default={})
+        excluded_params = ["currentJobId", "miniJob", "pageNum"]  # Parameters to exclude
+        
         for key, value in search_filters.items():
-            if value:  # Only add non-empty filters
+            if value and key not in excluded_params:
                 query_params.append(f"{key}={value}")
         
         # Construct final URL
@@ -184,35 +186,81 @@ def perform_job_search(page, keywords: str, location: str, config: Config) -> bo
         # Navigate to the search URL
         page.goto(search_url)
         
-        # Wait for results to load with multiple success indicators
-        success_selectors = [
+        # First check if we're in a single-job view and try to exit it
+        logger.debug("Checking for single-job view...")
+        try:
+            # Look for close/dismiss buttons that might appear in single-job view
+            close_selectors = [
+                "button[aria-label='Dismiss']",
+                "button[aria-label='Close']",
+                "button.jobs-search__close-button",
+                "button.jobs-home-close-button"
+            ]
+            
+            for selector in close_selectors:
+                close_button = page.query_selector(selector)
+                if close_button:
+                    logger.debug(f"Found close button with selector: {selector}")
+                    close_button.click()
+                    time.sleep(2)  # Wait for UI to update
+                    break
+        except Exception as e:
+            logger.debug(f"Error handling single-job view: {str(e)}")
+
+        # Wait for the two-pane layout to appear
+        logger.debug("Waiting for jobs list container...")
+        
+        # Try multiple possible selectors for the job list container
+        list_container_selectors = [
+            "div.jobs-search-two-pane__results",
             "ul.jobs-search__results-list",
             ".jobs-search-results-list",
-            ".job-card-container",
-            "[data-job-id]"
+            "div.jobs-search-results-list",
+            "ul.scaffold-layout__list-container"
         ]
         
-        for selector in success_selectors:
+        list_container = None
+        for selector in list_container_selectors:
             try:
-                page.wait_for_selector(selector, timeout=10000)
-                logger.debug(f"Found results with selector: {selector}")
-                
-                # Additional wait for results to stabilize
-                page.wait_for_load_state("networkidle", timeout=5000)
-                time.sleep(2)  # Extra stability wait
-                
-                # Verify we have job listings
-                job_cards = page.query_selector_all("ul.jobs-search__results-list li")
-                if len(job_cards) > 0:
-                    logger.info(f"Successfully loaded search results. Found {len(job_cards)} job cards.")
-                    return True
-            except Exception as e:
-                logger.debug(f"Selector {selector} not found: {str(e)}")
+                list_container = page.wait_for_selector(selector, timeout=5000)
+                if list_container:
+                    logger.debug(f"Found jobs list container with selector: {selector}")
+                    break
+            except Exception:
                 continue
         
-        logger.error("Could not verify search results")
-        page.screenshot(path="search_results_not_found.png")
-        return False
+        if not list_container:
+            logger.error("Could not find jobs list container with any known selector")
+            page.screenshot(path="no_jobs_list_found.png")
+            return False
+            
+        # Wait for the page to stabilize
+        page.wait_for_load_state("networkidle", timeout=5000)
+        time.sleep(2)  # Extra stability wait
+        
+        # Verify we have job listings
+        job_card_selectors = [
+            "ul.jobs-search__results-list li",
+            "div.jobs-search-two-pane__results li",
+            "ul.scaffold-layout__list-container li"
+        ]
+        
+        total_jobs = 0
+        for selector in job_card_selectors:
+            cards = page.query_selector_all(selector)
+            if len(cards) > 0:
+                total_jobs = len(cards)
+                logger.info(f"Found {total_jobs} job cards with selector: {selector}")
+                break
+        
+        if total_jobs == 0:
+            logger.error("No job cards found in the list")
+            page.screenshot(path="empty_jobs_list.png")
+            return False
+            
+        # Take a screenshot of the successful state
+        page.screenshot(path="jobs_search_success.png")
+        return True
             
     except Exception as e:
         logger.error(f"Job search failed: {str(e)}")
@@ -227,51 +275,146 @@ def collect_easy_apply_jobs(page) -> list:
     Collect visible job postings with 'Easy Apply' from the left-side jobs list.
     Returns a list of dictionaries, each containing job info and the card element.
     """
-    logger.debug("Looking for job cards on the current page...")
+    logger.info("Starting detailed collection of Easy Apply jobs...")
 
-    # Wait for job cards to be visible
+    # Take screenshot of initial state
     try:
-        page.wait_for_selector("ul.jobs-search__results-list", timeout=10000)
+        page.screenshot(path="initial_jobs_page.png")
+        logger.debug("Captured initial jobs page state")
+    except Exception as e:
+        logger.error(f"Failed to capture initial screenshot: {e}")
+
+    # Wait for job cards to be visible with detailed logging
+    try:
+        logger.debug("Waiting for jobs list to become visible...")
+        list_elem = page.wait_for_selector("ul.jobs-search__results-list", timeout=10000)
+        if list_elem:
+            logger.debug("Jobs list container found")
+            # Log the HTML structure for debugging
+            list_html = list_elem.inner_html()
+            logger.debug(f"Jobs list HTML structure (first 500 chars): {list_html[:500]}")
+        else:
+            logger.error("Jobs list container found but returned None")
+            return []
     except TimeoutError:
-        logger.error("Job results list not found")
+        logger.error("Timeout waiting for jobs list - not found after 10s")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error waiting for jobs list: {str(e)}")
         return []
 
-    # This selector gets the list of job cards in the left-hand column
+    # Get all job cards with detailed counts
     job_cards = page.query_selector_all("ul.jobs-search__results-list li")
-    logger.debug(f"Found {len(job_cards)} total job cards")
+    total_cards = len(job_cards)
+    logger.info(f"Found {total_cards} total job cards")
+
+    if total_cards == 0:
+        logger.error("No job cards found - possible loading issue or anti-automation measure")
+        page.screenshot(path="no_job_cards_found.png")
+        return []
 
     easy_apply_jobs = []
-
-    for card in job_cards:
+    
+    # Debug each card's structure
+    for index, card in enumerate(job_cards, 1):
         try:
-            # Extract job info from the card
+            logger.debug(f"\nAnalyzing job card {index}/{total_cards}")
+            
+            # Get card's HTML for debugging
+            card_html = card.inner_html()
+            logger.debug(f"Card {index} HTML structure (first 200 chars): {card_html[:200]}")
+            
+            # Log all buttons in this card for debugging
+            all_buttons = card.query_selector_all("button")
+            logger.debug(f"Found {len(all_buttons)} total buttons in card {index}")
+            for btn in all_buttons:
+                btn_text = btn.inner_text().strip()
+                btn_class = btn.get_attribute("class")
+                logger.debug(f"Button found: text='{btn_text}', class='{btn_class}'")
+
+            # Extract job info with validation
             title_elem = card.query_selector(".job-card-list__title") or card.query_selector("h3.base-search-card__title")
             company_elem = card.query_selector(".job-card-container__company-name") or card.query_selector("h4.base-search-card__subtitle")
             location_elem = card.query_selector(".job-card-container__metadata-item") or card.query_selector(".job-search-card__location")
 
-            # Check for Easy Apply button or indicator
-            easy_apply_indicator = (
-                card.query_selector("button.jobs-apply-button") or
-                card.query_selector("button:has-text('Easy Apply')") or
-                card.query_selector("[aria-label='Easy Apply']")
-            )
+            # Validate each element
+            title = title_elem.inner_text().strip() if title_elem else "Unknown Title"
+            company = company_elem.inner_text().strip() if company_elem else "Unknown Company"
+            location = location_elem.inner_text().strip() if location_elem else "Unknown Location"
+            
+            logger.debug(f"Card {index} basic info - Title: {title}, Company: {company}, Location: {location}")
+
+            # Detailed Easy Apply button detection
+            easy_apply_selectors = [
+                "button.jobs-apply-button",
+                "button:has-text('Easy Apply')",
+                "[aria-label='Easy Apply']",
+                ".jobs-apply-button",
+                "button.artdeco-button--icon-right"
+            ]
+
+            easy_apply_indicator = None
+            matched_selector = None
+
+            for selector in easy_apply_selectors:
+                try:
+                    button = card.query_selector(selector)
+                    if button:
+                        button_text = button.inner_text().strip()
+                        button_class = button.get_attribute("class")
+                        button_disabled = button.get_attribute("disabled")
+                        logger.debug(f"Found potential Easy Apply button with selector '{selector}':")
+                        logger.debug(f"  - Text: '{button_text}'")
+                        logger.debug(f"  - Class: '{button_class}'")
+                        logger.debug(f"  - Disabled: {button_disabled}")
+                        
+                        if button_disabled:
+                            logger.debug("Button is disabled, skipping")
+                            continue
+                            
+                        if "Easy Apply" in button_text:
+                            easy_apply_indicator = button
+                            matched_selector = selector
+                            break
+                except Exception as e:
+                    logger.debug(f"Error checking selector '{selector}': {str(e)}")
 
             if easy_apply_indicator:
+                logger.info(f"Found valid Easy Apply button in card {index} using selector: {matched_selector}")
+                
+                # Verify button is interactable
+                try:
+                    is_visible = easy_apply_indicator.is_visible()
+                    is_enabled = not easy_apply_indicator.get_attribute("disabled")
+                    logger.debug(f"Button state - Visible: {is_visible}, Enabled: {is_enabled}")
+                except Exception as e:
+                    logger.error(f"Error checking button state: {str(e)}")
+
                 job_info = {
-                    "element": card,  # Store the entire card element
+                    "element": card,
                     "easy_apply_button": easy_apply_indicator,
-                    "title": title_elem.inner_text().strip() if title_elem else "Unknown Title",
-                    "company": company_elem.inner_text().strip() if company_elem else "Unknown Company",
-                    "location": location_elem.inner_text().strip() if location_elem else "Unknown Location",
+                    "title": title,
+                    "company": company,
+                    "location": location,
+                    "matched_selector": matched_selector
                 }
                 easy_apply_jobs.append(job_info)
-                logger.debug(f"Found Easy Apply job: {job_info['title']} at {job_info['company']}")
+                logger.info(f"Added job to collection: {title} at {company}")
+            else:
+                logger.debug(f"No valid Easy Apply button found in card {index}")
 
         except Exception as e:
-            logger.error(f"Error processing job card: {str(e)}")
+            logger.error(f"Error processing card {index}: {str(e)}")
             continue
 
-    logger.info(f"Found {len(easy_apply_jobs)} jobs with 'Easy Apply' on this page")
+    logger.info(f"Collection complete. Found {len(easy_apply_jobs)} Easy Apply jobs out of {total_cards} total cards")
+    
+    # Take final screenshot
+    try:
+        page.screenshot(path="jobs_collection_complete.png")
+    except Exception as e:
+        logger.error(f"Failed to capture final screenshot: {e}")
+
     return easy_apply_jobs
 
 def apply_single_job(page, job: dict, config: Config):
@@ -279,39 +422,112 @@ def apply_single_job(page, job: dict, config: Config):
     Execute the Easy Apply flow for a single job, including multi-step forms.
     """
     try:
-        # 1. Click the job card to load details in the side/center panel
-        job["element"].click()
-        logger.debug(f"Clicked job card for {job['title']}")
-        
-        # Wait for job details to load
-        page.wait_for_load_state("networkidle", timeout=5000)
-        time.sleep(2)  # Additional wait for UI stability
+        logger.info(f"\nStarting application process for: {job['title']} at {job['company']}")
+        logger.debug(f"Using selector that matched during collection: {job.get('matched_selector')}")
 
-        # 2. Find and click the Easy Apply button (try both card and detail panel)
-        easy_apply_button = (
-            page.query_selector("button.jobs-apply-button") or
-            page.query_selector("button:has-text('Easy Apply')") or
-            page.query_selector("[aria-label='Easy Apply to jobs']") or
-            job.get("easy_apply_button")  # Fallback to stored button
-        )
+        # 1. Verify card is still valid
+        try:
+            is_card_attached = job["element"].is_attached()
+            logger.debug(f"Job card element still attached: {is_card_attached}")
+            if not is_card_attached:
+                raise RuntimeError("Job card element is no longer attached to DOM")
+        except Exception as e:
+            logger.error(f"Error verifying card state: {str(e)}")
+            raise
+
+        # Take screenshot before clicking
+        page.screenshot(path=f"before_card_click_{int(time.time())}.png")
+
+        # 2. Click the job card with validation
+        try:
+            logger.debug("Attempting to click job card...")
+            job["element"].click()
+            logger.debug("Successfully clicked job card")
+        except Exception as e:
+            logger.error(f"Failed to click job card: {str(e)}")
+            raise
+
+        # Wait for job details with verification
+        try:
+            logger.debug("Waiting for job details to load...")
+            page.wait_for_load_state("networkidle", timeout=5000)
+            time.sleep(2)  # Additional wait for UI stability
+            
+            # Verify job details loaded
+            detail_container = page.query_selector(".jobs-search__job-details")
+            if detail_container:
+                logger.debug("Job details container found")
+            else:
+                logger.warning("Job details container not found after click")
+        except Exception as e:
+            logger.error(f"Error waiting for job details: {str(e)}")
+
+        # Take screenshot after details load
+        page.screenshot(path=f"after_details_load_{int(time.time())}.png")
+
+        # 3. Find and verify Easy Apply button
+        logger.debug("Searching for Easy Apply button...")
+        easy_apply_button = None
+        button_states = []
+
+        # Try multiple button selectors
+        selectors = [
+            "button.jobs-apply-button",
+            "button:has-text('Easy Apply')",
+            "[aria-label='Easy Apply to jobs']",
+            job.get("easy_apply_button")
+        ]
+
+        for selector in selectors:
+            if isinstance(selector, str):
+                button = page.query_selector(selector)
+                if button:
+                    try:
+                        visible = button.is_visible()
+                        enabled = not button.get_attribute("disabled")
+                        text = button.inner_text().strip()
+                        button_states.append({
+                            "selector": selector,
+                            "visible": visible,
+                            "enabled": enabled,
+                            "text": text
+                        })
+                        if visible and enabled and "Easy Apply" in text:
+                            easy_apply_button = button
+                            logger.debug(f"Found valid Easy Apply button with selector: {selector}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"Error checking button state for selector {selector}: {str(e)}")
 
         if not easy_apply_button:
-            raise RuntimeError(f"No Easy Apply button found for {job['title']}")
+            logger.error("No valid Easy Apply button found. Button states found:")
+            for state in button_states:
+                logger.error(f"  Selector: {state['selector']}")
+                logger.error(f"    Visible: {state['visible']}")
+                logger.error(f"    Enabled: {state['enabled']}")
+                logger.error(f"    Text: {state['text']}")
+            raise RuntimeError("No valid Easy Apply button found")
 
-        easy_apply_button.click()
-        logger.debug("Clicked Easy Apply button")
+        # 4. Click Easy Apply button
+        try:
+            logger.debug("Attempting to click Easy Apply button...")
+            easy_apply_button.click()
+            logger.debug("Successfully clicked Easy Apply button")
+        except Exception as e:
+            logger.error(f"Failed to click Easy Apply button: {str(e)}")
+            raise
 
-        # 3. Wait for the application modal
+        # 5. Wait for the application modal
         try:
             page.wait_for_selector("div#artdeco-modal-outlet", timeout=8000)
             logger.debug("Application modal appeared")
         except TimeoutError:
             raise RuntimeError("Application modal did not appear")
 
-        # 4. Fill out the application form
+        # 6. Fill out the application form
         fill_application_form(page, config, job)
 
-        # 5. Submit the application
+        # 7. Submit the application
         submit_button = (
             page.query_selector("button:has-text('Submit application')") or
             page.query_selector("button:has-text('Submit')") or
