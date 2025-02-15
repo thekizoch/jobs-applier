@@ -10,86 +10,119 @@ An open-source Python tool that automates LinkedIn Easy Apply job applications a
 - Logging of application success/failure
 
 ## Installation
-1. Clone this repository:
+
+1. Install `uv` if you haven't already:
+   ```bash
+   pip install uv
+   ```
+
+2. Clone this repository:
    ```bash
    git clone https://github.com/your-username/jobs-applier.git
-   ```
-
-2. Install dependencies:
-   ```bash
    cd jobs-applier
-   pip install -r requirements.txt
    ```
 
-3. Install Playwright drivers:
+3. Create virtual environment and install dependencies using uv:
+   ```bash
+   uv venv
+   source .venv/bin/activate  # On macOS/Linux
+   # or
+   .venv\Scripts\activate     # On Windows
+   
+   uv pip install -r requirements.txt
+   ```
+
+4. Install Playwright browsers:
    ```bash
    playwright install
    ```
 
-## Usage
-1. Configure your settings:
-   - Copy `config.yaml.example` to `config.yaml` and update with your preferences
-   - Or use environment variables (see Configuration section)
+## Configuration
 
-2. Run:
+You'll need to set up your configuration before running. Copy the example config and modify it:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Then edit `config.yaml` with your settings:
+
+```yaml
+linkedin:
+  email: "your.email@example.com"    # Your LinkedIn email
+  password: "your_password"          # Your LinkedIn password
+
+search:
+  keywords: "Software Engineer"      # Your job search keywords
+  location: "Remote"                # Or your preferred location
+  max_applications: 10              # Start small for testing
+  experience_levels:
+    - "ENTRY_LEVEL"
+    - "ASSOCIATE"
+  job_types:
+    - "FULL_TIME"
+  date_posted: "Past Week"
+
+llm:
+  provider: "openai"
+  api_key: "${OPENAI_API_KEY}"      # Will be read from .env file
+  enabled: true                      # Set false to skip cover letters
+
+user_profile:
+  full_name: "Your Name"
+  phone: "Your Phone"
+  resume_path: "./data/resume.pdf"   # Path to your resume
+  summary: "Your professional summary..."
+```
+
+## Usage
+
+1. Make sure your virtual environment is activated:
+   ```bash
+   source .venv/bin/activate  # On macOS/Linux
+   # or
+   .venv\Scripts\activate     # On Windows
+   ```
+
+2. Run the application:
    ```bash
    python -m jobs_applier.main
    ```
 
-## Configuration
-You can configure the application using either a `config.yaml` file or environment variables.
-
-### Using config.yaml
-```yaml
-credentials:
-  linkedin:
-    email: your.email@example.com
-    password: your_password
-  openai:
-    api_key: your_openai_key  # Optional, for cover letter generation
-
-search_criteria:
-  keywords: ["Software Engineer", "Python Developer"]
-  location: "Remote"
-  job_types: ["Full-time"]
-  experience_level: ["Entry level", "Mid-Senior level"]
-  date_posted: "Past Week"
-
-application_settings:
-  max_applications_per_run: 50
-  wait_time_between_apps: [10, 30]  # Random wait between 10-30 seconds
-  generate_cover_letters: true
-```
-
-### Using Environment Variables
-Create a `.env` file in the root directory:
-```env
-LINKEDIN_EMAIL=your.email@example.com
-LINKEDIN_PASSWORD=your_password
-OPENAI_API_KEY=your_openai_key  # Optional, for cover letter generation
-```
-
 ## Project Structure
 ```
 jobs-applier/
-├── jobs_applier/
+├── jobs_applier/          # Main package
 │   ├── __init__.py
-│   ├── main.py
-│   ├── config.py
+│   ├── main.py           # Entry point
+│   ├── config.py         # Configuration handling
 │   ├── browser_automation.py
 │   ├── llm_integration.py
 │   ├── logs.py
 │   ├── utils.py
 │   └── constants.py
-├── tests/
-│   ├── test_basic.py
-│   ├── test_browser_flow.py
-│   └── test_llm_integration.py
+├── tests/                # Test suite
+├── data/                 # Store your resume here
 ├── requirements.txt
 ├── README.md
 ├── LICENSE
 ├── .gitignore
 └── config.yaml
+```
+
+## Development
+
+To set up for development:
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+Run tests:
+```bash
+pytest
 ```
 
 ## License
